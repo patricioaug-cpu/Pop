@@ -1,0 +1,6 @@
+{
+  "name": "Dropshipping Arbitrage Dashboard",
+  "description": "Painel de dropshipping conectando Shopee e Goboox com análise de lucro, memória de cálculo e rastreamento de fornecedores.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
