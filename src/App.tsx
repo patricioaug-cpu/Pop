@@ -64,10 +64,8 @@ export default function App() {
 
   // --- Standard/Automated Fee Rates ---
   const [commissionRate, setCommissionRate] = useState<number>(12); // commission fee 12%
-  const [serviceRate, setServiceRate] = useState<number>(2); // extra service rate 2%
+  const [serviceRate, setServiceRate] = useState<number>(0); // extra service rate
   const [paymentFeeFlat, setPaymentFeeFlat] = useState<number>(2.50); // custom flat transaction fee R$ 2,50
-  const [shopeeShippingMode, setShopeeShippingMode] = useState<'normal' | 'free'>('free'); // standard free shipping default
-  const [usePixSubsidy, setUsePixSubsidy] = useState<boolean>(true); // Pix subsidy inclusion toggle (true by default)
 
   // --- Search and Filtration State ---
   const [searchTerm, setSearchTerm] = useState('');
@@ -93,6 +91,8 @@ export default function App() {
   const [simulatedGobooxCost, setSimulatedGobooxCost] = useState<number>(MOCK_PRODUCTS[0].gobooxCost);
   const [overrideSuggestedPrice, setOverrideSuggestedPrice] = useState<number | null>(null);
   const [editablePriceInput, setEditablePriceInput] = useState<string>('');
+  const [simulatedFreteGratis, setSimulatedFreteGratis] = useState<number>(0);
+  const [simulatedTarifaAdicional, setSimulatedTarifaAdicional] = useState<number>(0.00);
 
   // --- Live Alerts/Notifications ---
   const [notifications, setNotifications] = useState<Array<{ id: string; text: string; time: string }>>([
@@ -164,6 +164,8 @@ export default function App() {
       setSimulatedGobooxCost(selectedProduct.gobooxCost);
       setOverrideSuggestedPrice(null);
       setEditablePriceInput('');
+      setSimulatedFreteGratis(0);
+      setSimulatedTarifaAdicional(0.00);
     }
   }, [selectedProduct]);
 
@@ -173,23 +175,6 @@ export default function App() {
     setTimeout(() => {
       setNewTrendAlert(null);
     }, 4000);
-  };
-
-  const handleSetShippingMode = (mode: 'normal' | 'free') => {
-    setShopeeShippingMode(mode);
-    if (mode === 'free') {
-      // Free Shipping strategy has commissions & standard 2% extra service fee (fully customizable)
-      setServiceRate(2);
-    } else {
-      // Regular shipping doesn't require the extra 2% service rate
-      setServiceRate(0);
-    }
-    triggerNotification(`Modo de frete Shopee definido como: ${mode === 'free' ? 'Frete Grátis (+2% serv.)' : 'Frete Normal (0% serv.)'}`);
-  };
-
-  const handleSetPixSubsidy = (active: boolean) => {
-    setUsePixSubsidy(active);
-    triggerNotification(`Subsídio Pix definido como: ${active ? 'ATIVADO (Com Subsídio nos cálculos)' : 'DESATIVADO (Sem Subsídio nos cálculos)'}`);
   };
 
   // Save/modify connections
@@ -278,35 +263,25 @@ export default function App() {
     return ['Todos', ...Array.from(list)];
   }, [currentProducts]);
 
-  // --- Dual calculation mapper (Now simplified/aligned to CPF standard model only) ---
+  // --- Single calculation mapper ---
   const computedProductList = useMemo(() => {
     return currentProducts.map(product => {
-      // Both calculation versions are now mapped to CPF-based standard shipping calculation
-      const calculationRegularShipping = performCalculation(
+      const calculation = performCalculation(
         product,
         globalDesiredMargin,
-        false, // useFreeShipping = false
         commissionRate,
         serviceRate,
-        paymentFeeFlat
-      );
-
-      const calculationFreeShipping = performCalculation(
-        product,
-        globalDesiredMargin,
-        true, // useFreeShipping = true (Frete Grátis)
-        commissionRate,
-        serviceRate,
-        paymentFeeFlat
+        paymentFeeFlat,
+        simulatedFreteGratis,
+        simulatedTarifaAdicional
       );
 
       return {
         product,
-        calculationRegularShipping,
-        calculationFreeShipping
+        calculation
       };
     });
-  }, [currentProducts, globalDesiredMargin, commissionRate, serviceRate, paymentFeeFlat]);
+  }, [currentProducts, globalDesiredMargin, commissionRate, serviceRate, paymentFeeFlat, simulatedFreteGratis, simulatedTarifaAdicional]);
 
   // Filtered computed list based on state controls (Simplified search)
   const filteredProducts = useMemo(() => {
@@ -316,7 +291,7 @@ export default function App() {
       
       const matchCategory = selectedCategory === 'Todos' || item.product.category === selectedCategory;
       const matchSupplier = selectedSupplier === 'Todos' || item.product.gobooxSupplier === selectedSupplier;
-      const matchMinMargin = item.calculationRegularShipping.actualMarginPercent >= minMarginFilter;
+      const matchMinMargin = item.calculation.actualMarginPercent >= minMarginFilter;
       const matchPriceRange = item.product.shopeePrice >= priceRange.min && item.product.shopeePrice <= priceRange.max;
       const matchSales = item.product.salesVolume > minSalesFilter;
 
@@ -324,8 +299,8 @@ export default function App() {
     });
   }, [computedProductList, searchTerm, selectedCategory, selectedSupplier, minMarginFilter, priceRange, minSalesFilter]);
 
-  // --- Selected Product Calculations (Now simplified to CPF-based standard shipping calculation) ---
-  const selectedProductCalculations = useMemo(() => {
+  // --- Selected Product Calculations ---
+  const activeSelectedCalculation = useMemo(() => {
     if (!selectedProduct) return null;
     
     // Shopee pricing and Goboox cost variables
@@ -335,44 +310,26 @@ export default function App() {
       gobooxCost: simulatedGobooxCost
     };
 
-    const regularCalc = performCalculation(
+    return performCalculation(
       regularProduct,
       globalDesiredMargin,
-      false, // useFreeShipping = false
       commissionRate,
       serviceRate,
-      paymentFeeFlat
+      paymentFeeFlat,
+      simulatedFreteGratis,
+      simulatedTarifaAdicional
     );
-
-    const freeCalc = performCalculation(
-      regularProduct,
-      globalDesiredMargin,
-      true, // useFreeShipping = true
-      commissionRate,
-      serviceRate,
-      paymentFeeFlat
-    );
-
-    return {
-      regular: regularCalc,
-      free: freeCalc
-    };
-  }, [selectedProduct, simulatedShopeePrice, simulatedGobooxCost, globalDesiredMargin, commissionRate, serviceRate, paymentFeeFlat]);
-
-  const activeSelectedCalculation = useMemo(() => {
-    if (!selectedProductCalculations) return null;
-    return shopeeShippingMode === 'free' ? selectedProductCalculations.free : selectedProductCalculations.regular;
-  }, [selectedProductCalculations, shopeeShippingMode]);
+  }, [selectedProduct, simulatedShopeePrice, simulatedGobooxCost, globalDesiredMargin, commissionRate, serviceRate, paymentFeeFlat, simulatedFreteGratis, simulatedTarifaAdicional]);
 
   // Stats Counters
   const statistics = useMemo(() => {
     const total = filteredProducts.length;
-    const profitableCount = filteredProducts.filter(p => p.calculationFreeShipping.isProfitable || p.calculationRegularShipping.isProfitable).length;
+    const profitableCount = filteredProducts.filter(p => p.calculation.isProfitable).length;
     const gFlashCount = filteredProducts.filter(p => p.product.gobooxSupplier === 'GOFLASH').length;
     const gp000Count = filteredProducts.filter(p => p.product.gobooxSupplier === 'GP000').length;
     
     const avgMargin = total > 0 
-      ? Math.round(filteredProducts.reduce((acc, p) => acc + p.calculationFreeShipping.actualMarginPercent, 0) / total * 10) / 10
+      ? Math.round(filteredProducts.reduce((acc, p) => acc + p.calculation.actualMarginPercent, 0) / total * 10) / 10
       : 0;
       
     return {
@@ -394,7 +351,7 @@ export default function App() {
       return {
         name: baseName,
         shortName,
-        profit: item.calculationRegularShipping.estimatedProfit
+        profit: item.calculation.estimatedProfit
       };
     });
 
@@ -407,7 +364,7 @@ export default function App() {
   const handleExportCSV = () => {
     try {
       let csvContent = 'data:text/csv;charset=utf-8,';
-      csvContent += 'Produto Shopee,Produto Goboox,Fornecedor,Preço de Mercado na Shopee,Custo Goboox,Margem Desejada (%),Preço de Venda Sugerido (Com Frete Grátis),Lucro Líquido final (Frete Grátis),Preço de Venda Sugerido (Frete Regular),Lucro Líquido final (Frete Regular)\n';
+      csvContent += 'Produto Shopee,Produto Goboox,Fornecedor,Preco de Mercado na Shopee,Custo Goboox,Margem Desejada (%),Preco de Venda Sugerido,Lucro Liquido final,Margem Real (%)\n';
       
       filteredProducts.forEach(item => {
         const row = [
@@ -417,10 +374,9 @@ export default function App() {
           item.product.shopeePrice.toFixed(2),
           item.product.gobooxCost.toFixed(2),
           globalDesiredMargin,
-          item.calculationFreeShipping.suggestedSalePrice.toFixed(2),
-          item.calculationFreeShipping.estimatedProfit.toFixed(2),
-          item.calculationRegularShipping.suggestedSalePrice.toFixed(2),
-          item.calculationRegularShipping.estimatedProfit.toFixed(2)
+          item.calculation.suggestedSalePrice.toFixed(2),
+          item.calculation.estimatedProfit.toFixed(2),
+          item.calculation.actualMarginPercent.toFixed(1)
         ].join(',');
         csvContent += row + '\n';
       });
@@ -696,223 +652,112 @@ export default function App() {
             
             {/* MASTER PARAMETER CONFIGURATION - USER CONTROLS MARGIN ONLY */}
             <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/80 shadow-md">
-              <div className="flex items-center justify-between mb-3.5 border-b border-slate-800 pb-3">
-                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                  <Sliders size={15} className="text-emerald-400" />
+              <div className="flex items-center gap-2 mb-3 border-b border-slate-800 pb-2.5">
+                <Sliders size={15} className="text-emerald-400" />
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider">
                   Margem de Lucro Alvo
                 </h3>
-                <div className="flex items-center gap-1 bg-emerald-950 border border-emerald-500/20 px-2 py-0.5 rounded-md font-mono text-xs text-emerald-400 font-bold">
-                  <input
-                    type="number"
-                    min="5"
-                    max="99"
-                    value={globalDesiredMargin}
-                    onChange={(e) => {
-                      const val = Math.min(99, Math.max(5, Number(e.target.value)));
-                      setGlobalDesiredMargin(val);
-                    }}
-                    className="w-8 bg-transparent text-emerald-400 font-mono font-bold text-xs text-right border-none outline-none focus:ring-0 p-0"
-                  />
-                  <span>% desejada</span>
-                </div>
               </div>
               
-              <div className="py-2">
-                <label className="block text-xs text-slate-350 mb-2">Defina sua margem de lucro mínima desejada:</label>
-                <input 
-                  type="range" 
-                  min="5" 
-                  max="45" 
-                  step="1"
-                  value={globalDesiredMargin}
-                  onChange={(e) => {
-                    setGlobalDesiredMargin(Number(e.target.value));
-                    // Simple margin change automatically triggers recalculated side effects
-                  }}
-                  className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" 
-                />
+              <div className="space-y-3">
+                <label htmlFor="global-desired-margin-input" className="block text-xs text-slate-350 leading-normal">
+                  Defina sua margem de lucro mínima desejada:
+                </label>
                 
-                <div className="flex justify-between text-[11px] text-slate-500 mt-2.5 font-mono">
-                  <span>5% (Baixa Carga)</span>
-                  <span>25%</span>
-                  <span>45% (Agressivo)</span>
-                </div>
-              </div>
-
-              {/* DUAL INPUT FOR VALUE-BASED NET PROFIT */}
-              <div className="mt-4 pt-4 border-t border-slate-800/80 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-slate-400 font-sans">Lucro Líquido Unitário Desejado:</span>
-                  <span className="font-mono text-xs text-teal-400 font-bold">
-                    {activeSelectedCalculation 
-                      ? formatCurrency(Math.round(activeSelectedCalculation.suggestedSalePrice * (globalDesiredMargin / 100) * 100) / 100)
-                      : formatCurrency(0)}
-                  </span>
-                </div>
-                
-                <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-850 px-3 py-1.5 rounded-xl">
-                  <span className="text-xs text-slate-500 font-mono font-bold">R$</span>
+                <div className="relative flex items-center">
                   <input
+                    id="global-desired-margin-input"
                     type="number"
-                    min="1"
-                    max="1000"
+                    min="0"
+                    max="100"
                     step="0.5"
-                    value={
-                      activeSelectedCalculation 
-                        ? Math.round(activeSelectedCalculation.suggestedSalePrice * (globalDesiredMargin / 100) * 100) / 100 
-                        : 0
-                    }
+                    value={globalDesiredMargin}
                     onChange={(e) => {
-                      const newProfit = Number(e.target.value);
-                      if (newProfit > 0 && selectedProduct) {
-                        const newMargin = findMarginForDesiredProfit(
-                          newProfit, 
-                          simulatedGobooxCost, 
-                          activeSelectedCalculation ? activeSelectedCalculation.actualShippingCost : selectedProduct.shopeeShippingCost
-                        );
-                        setGlobalDesiredMargin(newMargin);
-                      }
+                      const val = parseFloat(e.target.value);
+                      setGlobalDesiredMargin(isNaN(val) || val < 0 ? 0 : val);
                     }}
-                    className="w-full bg-transparent text-slate-100 font-mono font-bold text-xs border-none outline-none focus:ring-0 p-0"
+                    className="w-full pl-4 pr-12 py-2 bg-slate-950 border border-slate-800 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 rounded-lg text-sm font-bold font-mono text-emerald-400 transition-all shadow-inner"
+                    placeholder="20"
                   />
-                  <span className="text-[10px] text-slate-500 font-sans italic shrink-0">ajustar lucro</span>
+                  <span className="absolute right-3.5 text-xs font-bold font-mono text-slate-500">%</span>
                 </div>
-                {selectedProduct && (
-                  <p className="text-[9.5px] text-slate-500 font-sans leading-tight">
-                    *Calculado com base no custo atual de <strong>{formatCurrency(simulatedGobooxCost)}</strong> do produto selecionado.
-                  </p>
-                )}
               </div>
 
               <p className="text-[11px] text-slate-400 mt-4 leading-relaxed bg-slate-950/60 p-3 rounded-xl border border-slate-850">
-                💡 Ao digitar ou alterar a margem em (%) ou o lucro absoluto em (R$), todos os cálculos de taxas, lucros e sugestões de preços são updated instantaneamente em tempo real na tela.
+                💡 Ao alterar a margem de lucro em (%), todos os cálculos de taxas, lucros e sugestões de preços são atualizados instantaneamente em tempo real na tela.
               </p>
             </div>
 
-            {/* PROGRAMA DE FRETE GRÁTIS TOGGLE CARD */}
+            {/* ADJUSTMENTS EXTRAS (EXCEL) - EDITABLE FIELDS */}
             <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/80 shadow-md">
               <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-2.5">
                 <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                  <Truck size={14} className="text-cyan-400 font-bold" />
-                  Programa Frete Grátis
+                  <Sliders size={14} className="text-indigo-400 font-bold" />
+                  Ajustes Extras (Planilha)
                 </h3>
-                <span className={`text-[9px] px-2 py-0.5 rounded border font-mono font-bold transition-all ${
-                  shopeeShippingMode === 'free' 
-                    ? 'bg-cyan-950/80 text-cyan-400 border-cyan-500/20' 
-                    : 'bg-slate-950 text-slate-500 border-slate-850'
-                }`}>
-                  {shopeeShippingMode === 'free' ? 'ATIVO' : 'INATIVO'}
-                </span>
+                <span className="text-[9px] bg-indigo-950/80 text-indigo-400 px-2 py-0.5 rounded border border-indigo-500/20 font-mono font-bold">Editável</span>
               </div>
 
-              <div className="space-y-3">
-                <p className="text-[11px] text-slate-400 leading-normal">
-                  Selecione se deseja aplicar o benefício do <strong>Programa de Frete Grátis</strong> nos cálculos de custos e preços sugeridos de venda:
-                </p>
-
-                <div className="grid grid-cols-2 bg-slate-950 p-1 rounded-xl border border-slate-850">
-                  <button
-                    type="button"
-                    onClick={() => handleSetShippingMode('free')}
-                    className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                      shopeeShippingMode === 'free'
-                        ? 'bg-teal-500 text-slate-950 font-extrabold shadow-sm shadow-teal-900/30'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    {shopeeShippingMode === 'free' && <Check size={12} />}
-                    <span>Sim (Aplicar)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleSetShippingMode('normal')}
-                    className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                      shopeeShippingMode === 'normal'
-                        ? 'bg-slate-800 text-white font-extrabold border border-slate-700/80'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    {shopeeShippingMode === 'normal' && <Check size={12} />}
-                    <span>Não (Regular)</span>
-                  </button>
-                </div>
-
-                <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-850 text-[10px] text-slate-400 leading-relaxed space-y-1.5">
-                  <p className="font-semibold text-slate-350 flex items-center gap-1 text-[11px]">
-                    <Info size={11} className="text-cyan-400 shrink-0" />
-                    Regra Oficial de Subsídios:
-                  </p>
-                  <ul className="list-disc leading-normal space-y-1 pl-4.5 font-sans text-slate-450 text-[10px]">
-                    <li>Até <strong>R$ 79,99</strong>: Cobre frete até <strong>R$ 20,00</strong></li>
-                    <li>De <strong>R$ 80 a R$ 199,99</strong>: Cobre frete até <strong>R$ 30,00</strong></li>
-                    <li>Acima de <strong>R$ 200,00</strong>: Cobre frete até <strong>R$ 40,00</strong></li>
-                  </ul>
-                  <p className="text-[9px] text-slate-500 italic mt-0.5">
-                    * O frete real é abatido pelo limite correspondente ao preço estimado.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* SIMULAÇÃO DO SUBSÍDIO DO PIX TOGGLE CARD */}
-            <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/80 shadow-md">
-              <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-2.5">
-                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                  <Percent size={14} className="text-teal-400 font-bold" />
-                  Subsídio do Pix (Shopee)
-                </h3>
-                <span className={`text-[9px] px-2 py-0.5 rounded border font-mono font-bold transition-all ${
-                  usePixSubsidy 
-                    ? 'bg-teal-950/80 text-teal-400 border-teal-500/20' 
-                    : 'bg-slate-950 text-slate-500 border-slate-850'
-                }`}>
-                  {usePixSubsidy ? 'ATIVO' : 'INATIVO'}
-                </span>
-              </div>
-
-              <div className="space-y-3">
-                <p className="text-[11px] text-slate-400 leading-normal">
-                  Escolha se deseja calcular os custos de comissão e notas fiscais considerando o <strong>Subsídio Pix oficial da Shopee (5% ou 8%)</strong>:
-                </p>
-
-                <div className="grid grid-cols-2 bg-slate-950 p-1 rounded-xl border border-slate-850">
-                  <button
-                    type="button"
-                    onClick={() => handleSetPixSubsidy(true)}
-                    className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                      usePixSubsidy
-                        ? 'bg-teal-500 text-slate-950 font-extrabold shadow-sm shadow-teal-900/30'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    {usePixSubsidy && <Check size={12} />}
-                    <span>Sim (Aplicar)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleSetPixSubsidy(false)}
-                    className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
-                      !usePixSubsidy
-                        ? 'bg-slate-800 text-white font-extrabold border border-slate-700/80'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    {!usePixSubsidy && <Check size={12} />}
-                    <span>Não (Normal)</span>
-                  </button>
-                </div>
-
-                <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-850 text-[10px] text-slate-400 leading-relaxed space-y-1.5">
-                  <div className="flex items-center gap-1 mb-1 font-semibold text-slate-300">
-                    <Zap size={11} className="text-teal-400 shrink-0" />
-                    <span>Impacto Simulado:</span>
+              <div className="space-y-4">
+                {/* 1. FRETE GRÁTIS (R$) */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-slate-400 font-sans flex items-center gap-1">
+                      Frete Grátis Oferecido (B5):
+                    </span>
+                    <span className="font-mono text-indigo-400 font-bold">{formatCurrency(simulatedFreteGratis)}</span>
                   </div>
-                  <p className="text-[10px] text-slate-400 leading-normal">
-                    Se ativado, as taxas de comissão listadas no painel serão reduzidas pelo subsídio, e o valor líquido na NF será ajustado com desconto de <strong>5% (vendas &lt; R$500)</strong> ou <strong>8% (vendas &ge; R$500)</strong>.
+                  <div className="relative flex items-center">
+                    <span className="absolute left-3 text-xs font-bold text-slate-500">R$</span>
+                    <input
+                      type="number"
+                      step="0.50"
+                      min="0"
+                      value={simulatedFreteGratis === 0 ? '' : simulatedFreteGratis}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setSimulatedFreteGratis(isNaN(val) || val < 0 ? 0 : val);
+                      }}
+                      className="w-full pl-9 pr-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg text-xs font-bold font-mono text-white transition-all shadow-inner placeholder-slate-750"
+                      placeholder="0,00"
+                    />
+                  </div>
+                  <p className="text-[9.5px] text-slate-500 leading-normal">
+                    * Subsídio de frete oferecido ao comprador (B5 da planilha, vira custo adicional).
+                  </p>
+                </div>
+
+                {/* 2. TARIFA ADICIONAL (R$) */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-slate-400 font-sans flex items-center gap-1">
+                      Tarifa Adicional CPF (B6):
+                    </span>
+                    <span className="font-mono text-amber-400 font-bold">{formatCurrency(simulatedTarifaAdicional)}</span>
+                  </div>
+                  <div className="relative flex items-center">
+                    <span className="absolute left-3 text-xs font-bold text-slate-500">R$</span>
+                    <input
+                      type="number"
+                      step="0.10"
+                      min="0"
+                      value={simulatedTarifaAdicional === 0 ? '' : simulatedTarifaAdicional}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        setSimulatedTarifaAdicional(isNaN(val) || val < 0 ? 0 : val);
+                      }}
+                      className="w-full pl-9 pr-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg text-xs font-bold font-mono text-white transition-all shadow-inner placeholder-slate-75"
+                      placeholder="0,00"
+                    />
+                  </div>
+                  <p className="text-[9.5px] text-slate-500 leading-normal">
+                    * Taxa fixa adicional Shopee CPF por item vendido (B6 da planilha).
                   </p>
                 </div>
               </div>
             </div>
+
+
 
             {/* CRITÉRIO DE ESCOLHA SHOPEE REGULATION CARD */}
             <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/80 shadow-md">
@@ -960,175 +805,6 @@ export default function App() {
 
 
 
-
-            {/* SHOPEE CPF FEES SUMMARY FOR SELECTED PRODUCT */}
-            {selectedProduct && activeSelectedCalculation && (
-              <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/85 shadow-md space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-                  <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                    <Percent size={14} className="text-amber-400" />
-                    Taxas da Shopee BR (CPF)
-                  </h3>
-                  <span className="text-[9px] bg-amber-950/80 text-amber-400 px-2 py-0.5 rounded border border-amber-500/20 font-mono font-bold">Oficial</span>
-                </div>
-                
-                <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/60 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 font-mono">Simulação de Preço Sugerido:</span>
-                    {overrideSuggestedPrice !== null && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOverrideSuggestedPrice(null);
-                          setEditablePriceInput('');
-                          triggerNotification('Restaurado para o preço calculado pelo sistema!');
-                        }}
-                        className="text-[10px] text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1 transition cursor-pointer bg-amber-950/40 border border-amber-500/20 px-2.5 py-1 rounded-md"
-                      >
-                        <RefreshCw size={10} className="shrink-0" />
-                        Restaurar Padrão (Calcular)
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <div className="relative flex items-center max-w-[180px]">
-                      <span className="absolute left-3 text-xs font-bold text-slate-500">R$</span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0.01"
-                        value={editablePriceInput !== '' ? editablePriceInput : (overrideSuggestedPrice !== null ? overrideSuggestedPrice : activeSelectedCalculation.suggestedSalePrice).toFixed(2)}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setEditablePriceInput(val);
-                          const parsed = parseFloat(val);
-                          if (!isNaN(parsed) && parsed > 0) {
-                            setOverrideSuggestedPrice(parsed);
-                          } else {
-                            setOverrideSuggestedPrice(null);
-                          }
-                        }}
-                        className="w-full pl-9 pr-3 py-1.5 bg-slate-900 border border-slate-700/80 hover:border-slate-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg text-xs font-bold font-mono text-white transition-all shadow-inner placeholder-slate-600"
-                        placeholder={activeSelectedCalculation.suggestedSalePrice.toFixed(2)}
-                      />
-                    </div>
-                    <span className="text-[10px] text-slate-500 font-medium uppercase font-mono">
-                      {overrideSuggestedPrice !== null ? '📝 Sobrescrito Manual' : '⚙️ Calculado p/ margem'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* COMPARATIVE PIX SUBSIDY TABLE (AS SHOWN IN THE RULES IMAGE) */}
-                <div className="overflow-hidden rounded-xl border border-slate-800/60 bg-slate-950/45 text-[11px]">
-                  <div className="grid grid-cols-3 bg-slate-950/90 text-[10px] font-bold text-slate-400 border-b border-slate-800/70 p-2 font-mono">
-                    <div>MÉTRICA</div>
-                    <div className={`text-center font-bold transition-all py-1 rounded ${!usePixSubsidy ? 'text-emerald-400 bg-emerald-950/35 border border-emerald-500/20' : 'text-slate-500'}`}>
-                      CARTÃO / BOLETO {!usePixSubsidy && '• ATIVO'}
-                    </div>
-                    <div className={`text-center font-bold transition-all py-1 rounded ${usePixSubsidy ? 'text-teal-400 bg-teal-950/35 border border-teal-500/20' : 'text-slate-500'}`}>
-                      PAGAMENTO POR PIX {usePixSubsidy && '• ATIVO'}
-                    </div>
-                  </div>
- 
-                  {(() => {
-                    const price = overrideSuggestedPrice !== null ? overrideSuggestedPrice : activeSelectedCalculation.suggestedSalePrice;
-                    const subRate = price < 80 ? 0 : (price < 500 ? 0.05 : 0.08);
-                    const subAmount = price * subRate;
-                    const nfValue = price - subAmount;
-                    const regFees = getShopeeFeeDetails(price).totalFee;
-                    const pixFees = Math.max(0, regFees - subAmount);
-                    const netReceivedFromShopee = price - regFees; // same for both
-                    const cardKeepRate = price > 0 ? (netReceivedFromShopee / price) * 100 : 0;
-                    const pixKeepRate = nfValue > 0 ? (netReceivedFromShopee / nfValue) * 100 : 0;
-
-                    // Extra simulated profit details from custom price
-                    const costOfGoods = simulatedGobooxCost;
-                    const shipping = activeSelectedCalculation.actualShippingCost;
-                    const customProfit = netReceivedFromShopee - costOfGoods - shipping;
-                    const realMarginCard = price > 0 ? (customProfit / price) * 100 : 0;
-                    const realMarginPix = nfValue > 0 ? (customProfit / nfValue) * 100 : 0;
-
-                    return (
-                      <div className="divide-y divide-slate-850/60 font-sans">
-                        {/* 1. Valor item cadastrado */}
-                        <div className="grid grid-cols-3 p-2 font-mono text-[10.5px]">
-                          <span className="text-slate-400">Cadastrado no Sistema</span>
-                          <span className={`text-center font-semibold ${!usePixSubsidy ? 'text-emerald-300 font-bold bg-emerald-950/15 rounded' : 'text-slate-400'}`}>{formatCurrency(price)}</span>
-                          <span className={`text-center font-semibold ${usePixSubsidy ? 'text-teal-400 font-bold bg-teal-950/20 rounded' : 'text-slate-500'}`}>{formatCurrency(price)}</span>
-                        </div>
-                        {/* 2. Subsídio Pix */}
-                        <div className="grid grid-cols-3 p-2 font-mono text-[10.5px]">
-                          <span className="text-slate-400">Subsídio Pix ({(subRate * 100).toFixed(0)}%)</span>
-                          <span className={`text-center ${!usePixSubsidy ? 'text-emerald-300 bg-emerald-950/15 rounded font-semibold' : 'text-slate-600'}`}>R$ 0,00</span>
-                          <span className={`text-center font-bold ${usePixSubsidy ? 'text-emerald-400 bg-teal-950/20 rounded font-bold' : 'text-slate-500'}`}>-{formatCurrency(subAmount)}</span>
-                        </div>
-                        {/* 3. Valor NF */}
-                        <div className="grid grid-cols-3 p-2 font-mono text-[10.5px]">
-                          <span className="text-slate-400">Valor na Nota Fiscal</span>
-                          <span className={`text-center font-semibold ${!usePixSubsidy ? 'text-emerald-300 font-bold bg-emerald-950/15 rounded' : 'text-slate-400'}`}>{formatCurrency(price)}</span>
-                          <span className={`text-center font-bold ${usePixSubsidy ? 'text-white bg-teal-950/20 rounded font-extrabold' : 'text-slate-500'}`}>{formatCurrency(nfValue)}</span>
-                        </div>
-                        {/* 4. Comissão Shopee */}
-                        <div className="grid grid-cols-3 p-2 font-mono text-[10.5px]">
-                          <span className="text-slate-400">Comissão Retida</span>
-                          <span className={`text-center font-semibold ${!usePixSubsidy ? 'text-rose-500 font-bold bg-rose-955/10 rounded' : 'text-slate-500'}`}>-{formatCurrency(regFees)}</span>
-                          <span className={`text-center font-semibold ${usePixSubsidy ? 'text-emerald-400 font-bold bg-teal-950/20 rounded' : 'text-slate-500'}`}>-{formatCurrency(pixFees)}</span>
-                        </div>
-                        {/* 5. Valor líquido recebido */}
-                        <div className="grid grid-cols-3 p-2.5 font-bold font-mono bg-indigo-950/15 border-t border-indigo-500/10 text-[11px]">
-                          <span className="text-indigo-400 font-sans font-bold">Líquido Recebido</span>
-                          <span className={`text-center ${!usePixSubsidy ? 'text-indigo-300 font-extrabold bg-indigo-950/30 rounded' : 'text-indigo-550 font-medium'}`}>{formatCurrency(netReceivedFromShopee)}</span>
-                          <span className={`text-center ${usePixSubsidy ? 'text-indigo-300 font-extrabold bg-indigo-950/30 rounded' : 'text-indigo-550 font-medium'}`}>{formatCurrency(netReceivedFromShopee)}</span>
-                        </div>
-                        {/* 6. Keep Rate */}
-                        <div className="grid grid-cols-3 p-2.5 font-mono bg-slate-950 text-[10px]">
-                          <span className="text-slate-450 font-sans flex items-center gap-1 leading-tight">
-                            Aproveito Fiscal %:
-                          </span>
-                          <span className={`text-center font-semibold ${!usePixSubsidy ? 'text-emerald-300 font-bold bg-emerald-950/15 rounded' : 'text-slate-500'}`}>{cardKeepRate.toFixed(1)}%</span>
-                          <span className={`text-center font-extrabold ${usePixSubsidy ? 'text-emerald-400 font-bold bg-teal-950/20 rounded' : 'text-slate-500'}`}>{pixKeepRate.toFixed(1)}%</span>
-                        </div>
-                        {/* 7. Margem Realizada */}
-                        <div className="grid grid-cols-3 p-2.5 font-bold font-mono bg-slate-900 border-t border-slate-800/80 text-[10px]">
-                          <span className="text-slate-400 font-sans flex items-center gap-1 leading-tight">
-                            <Zap size={10} className="text-amber-400 shrink-0" />
-                            Margem Realizada:
-                          </span>
-                          <span className={`text-center text-[10.5px] font-bold ${!usePixSubsidy ? 'text-amber-400 font-extrabold bg-amber-950/20 rounded-md py-0.5' : 'text-slate-500'}`}>
-                            {realMarginCard.toFixed(1)}% ({formatCurrency(customProfit)})
-                          </span>
-                          <span className={`text-center text-[10.5px] font-bold ${usePixSubsidy ? 'text-teal-400 font-extrabold bg-teal-950/35 rounded-md py-0.5' : 'text-slate-500'}`}>
-                            {realMarginPix.toFixed(1)}% ({formatCurrency(customProfit)})
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* INFO NOTES ON PIX RULES */}
-                <div className="bg-slate-950/70 p-3 rounded-xl border border-slate-850/80 text-[10.5px] leading-relaxed text-slate-400 space-y-1">
-                  <p className="font-bold text-slate-300 flex items-center gap-1 text-[11px]">
-                    <Info size={12} className="text-teal-400" />
-                    Como funciona o Subsídio do Pix?
-                  </p>
-                  <p>A Shopee oferece descontos de 5% ou 8% na nota fiscal para pagamentos por Pix. O seu repasse líquido continua igual, mas a Shopee transfere o subsídio reduzindo proporcionalmente a sua comissão retida!</p>
-                  <p className="mt-1 font-mono text-[9px] text-slate-500">Regra Oficial: R$80 a R$499,99 = 5% subsídio | &gt;= R$500 = 8% subsídio</p>
-                </div>
-
-                <div className="pt-1.5 border-t border-slate-800/80 text-[10px] text-slate-500 leading-normal space-y-2">
-                  <p>📊 <strong>Grade de Comissões Shopee CPF:</strong></p>
-                  <ul className="list-disc list-inside space-y-1 pl-1 font-mono text-[9px]">
-                    <li>Abaixo de R$ 12: comissão de 25% + R$ 4,00</li>
-                    <li>Entre R$ 12 e R$ 79,99: 20% + R$ 7,00</li>
-                    <li>R$ 80 a R$ 99,99: 14% + R$ 19,00</li>
-                    <li>R$ 100 a R$ 199,99: 14% + R$ 23,00</li>
-                    <li>Acima de R$ 200: 14% + R$ 29,00</li>
-                  </ul>
-                </div>
-              </div>
-            )}
 
           </section>
 
@@ -1322,15 +998,14 @@ export default function App() {
                         <p className="text-[11px] mt-1 text-slate-500">Altere seus parâmetros de margem para reavaliar mais correspondências lucrativas.</p>
                       </div>
                     ) : (
-                      filteredProducts.map(({ product, calculationRegularShipping, calculationFreeShipping }) => {
+                      filteredProducts.map(({ product, calculation }) => {
                         const isSelected = selectedProduct.id === product.id;
-                        const activeCalc = shopeeShippingMode === 'free' ? calculationFreeShipping : calculationRegularShipping;
-                        const isHighlyProfitable = activeCalc.actualMarginPercent >= 22;
+                        const isHighlyProfitable = calculation.actualMarginPercent >= 22;
                         
                         // Set active values based on selected layout mode
                         const displayedProfit = metricMode === 'unit' 
-                          ? activeCalc.estimatedProfit 
-                          : activeCalc.estimatedProfit * monthlyVolume;
+                          ? calculation.estimatedProfit 
+                          : calculation.estimatedProfit * monthlyVolume;
                         
                         const displayedLabel = metricMode === 'unit'
                           ? 'Lucro Líquido /vd'
@@ -1410,7 +1085,7 @@ export default function App() {
                                 <div className="border-l border-slate-900 bg-amber-500/5">
                                   <span className="text-[8px] block uppercase font-bold tracking-wider font-mono text-amber-400 leading-tight">Sugestão de Venda</span>
                                   <div className="text-[10px] sm:text-xs font-mono font-bold mt-0.5 text-amber-400">
-                                    {formatCurrency(activeCalc.suggestedSalePrice)}{usePixSubsidy && <span className="block text-[7.5px] text-teal-400 font-sans leading-none mt-0.5 font-bold">NF Pix: {formatCurrency(activeCalc.suggestedSalePrice - (activeCalc.suggestedSalePrice * (activeCalc.suggestedSalePrice < 80 ? 0 : (activeCalc.suggestedSalePrice < 500 ? 5 : 8) / 100)))}</span>}
+                                    {formatCurrency(calculation.suggestedSalePrice)}
                                   </div>
                                 </div>
 
@@ -1431,7 +1106,7 @@ export default function App() {
 
                                 <div className="flex gap-1.5 shrink-0">
                                   <span className="text-[9px] bg-emerald-950/80 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-mono">
-                                    {usePixSubsidy && <strong className="text-teal-400 mr-1 text-[8px] animate-pulse">⚡ PIX</strong>}Margem: {usePixSubsidy ? activeCalc.pixInvoiceMarginPercent : activeCalc.actualMarginPercent}%
+                                    Margem: {calculation.actualMarginPercent}%
                                   </span>
                                 </div>
                               </div>

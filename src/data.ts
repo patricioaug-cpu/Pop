@@ -9,7 +9,7 @@ export interface ShopeeFeeDetails {
   commissionAmount: number;
 }
 
-export function getShopeeFeeDetails(price: number): ShopeeFeeDetails {
+export function getShopeeFeeDetails(price: number, customTarifaAdicional: number = 3.00): ShopeeFeeDetails {
   if (price < 12) {
     // Regressiva linear pricing from image: 
     // For price R$10: fee R$6.50
@@ -27,32 +27,32 @@ export function getShopeeFeeDetails(price: number): ShopeeFeeDetails {
     return {
       commissionRate: 20,
       fixedFee: 4.00,
-      cpfTax: 3.00,
-      totalFee: (price * 0.20) + 4.00 + 3.00,
+      cpfTax: customTarifaAdicional,
+      totalFee: (price * 0.20) + 4.00 + customTarifaAdicional,
       commissionAmount: price * 0.20
     };
   } else if (price <= 99.99) {
     return {
       commissionRate: 14,
       fixedFee: 16.00,
-      cpfTax: 3.00,
-      totalFee: (price * 0.14) + 16.00 + 3.00,
+      cpfTax: customTarifaAdicional,
+      totalFee: (price * 0.14) + 16.00 + customTarifaAdicional,
       commissionAmount: price * 0.14
     };
   } else if (price <= 199.99) {
     return {
       commissionRate: 14,
       fixedFee: 20.00,
-      cpfTax: 3.00,
-      totalFee: (price * 0.14) + 20.00 + 3.00,
+      cpfTax: customTarifaAdicional,
+      totalFee: (price * 0.14) + 20.00 + customTarifaAdicional,
       commissionAmount: price * 0.14
     };
   } else { // >= 200.00
     return {
       commissionRate: 14,
       fixedFee: 26.00,
-      cpfTax: 3.00,
-      totalFee: (price * 0.14) + 26.00 + 3.00,
+      cpfTax: customTarifaAdicional,
+      totalFee: (price * 0.14) + 26.00 + customTarifaAdicional,
       commissionAmount: price * 0.14
     };
   }
@@ -257,39 +257,25 @@ export const MOCK_PRODUCTS: Product[] = [
 export function performCalculation(
   product: Product,
   configuredMarginPercent: number,
-  useFreeShipping: boolean, // Actively used for shipping subsidy calculations
   commissionRatePercent: number = 12, // fallback
   serviceRatePercent: number = 2, // fallback
-  paymentFeeFlat: number = 2.50 // fallback
+  paymentFeeFlat: number = 2.50, // fallback
+  customFreteGratis: number = 0,
+  customTarifaAdicional: number = 3.00
 ): CalculationDetails {
   
   const shopeePrice = product.shopeePrice;
   const gobooxCost = product.gobooxCost;
   
-  // Free Shipping subsidy logic (from the image's rules)
-  // - Para itens de até R$79,99: Cupons de frete grátis válidos para fretes de até R$20
-  // - Para itens de R$80 a R$199,99: Cupons de frete grátis válidos para fretes de até R$30
-  // - Para itens acima de R$200: Cupons de frete grátis válidos para fretes de até R$40
-  let shippingSubsidyAmount = 0;
-  if (useFreeShipping) {
-    if (shopeePrice <= 79.99) {
-      shippingSubsidyAmount = 20;
-    } else if (shopeePrice <= 199.99) {
-      shippingSubsidyAmount = 30;
-    } else {
-      shippingSubsidyAmount = 40;
-    }
-  }
-
-  const actualShippingCost = Math.max(0, product.shopeeShippingCost - shippingSubsidyAmount);
+  const actualShippingCost = product.shopeeShippingCost;
   
-  // Calculate fees conforming to CPF tables
-  const feeDetails = getShopeeFeeDetails(shopeePrice);
+  // Calculate fees conforming to CPF tables with custom tarifa adicional 
+  const feeDetails = getShopeeFeeDetails(shopeePrice, customTarifaAdicional);
   const totalShopeeFees = feeDetails.totalFee;
   
   // Total cost representation for dropshipper:
-  // Product unit cost + shipping cost + Shopee platform deductions
-  const totalCost = gobooxCost + actualShippingCost + totalShopeeFees;
+  // Product unit cost + shipping cost + Shopee platform deductions + custom frete grátis subsidy
+  const totalCost = gobooxCost + actualShippingCost + totalShopeeFees + customFreteGratis;
   
   // Estimated Net Profit
   const estimatedProfit = shopeePrice - totalCost;
@@ -297,27 +283,43 @@ export function performCalculation(
   // Actual margin based on current Shopee market price
   const actualMarginPercent = shopeePrice > 0 ? (estimatedProfit / shopeePrice) * 100 : 0;
   
-  // Pix subsidy calculations based on the image's rules
-  const pixSubsidyRate = shopeePrice < 80 ? 0 : (shopeePrice < 500 ? 0.05 : 0.08);
-  const pixSubsidyAmount = Math.round((shopeePrice * pixSubsidyRate) * 100) / 100;
-  const pixInvoiceValue = Math.round((shopeePrice - pixSubsidyAmount) * 100) / 100;
-  const pixCommissionAmount = Math.round(Math.max(0, totalShopeeFees - pixSubsidyAmount) * 100) / 100;
-  const pixInvoiceMarginPercent = pixInvoiceValue > 0 ? Math.round(((estimatedProfit) / pixInvoiceValue) * 100 * 100) / 100 : 0;
-
   // Suggested selling price calculated with base on the calculated average value of the product (shopeePrice)
   // Utilizing the exact Shopee commission rate and flat fees of the average product price tier
   const targetMarginRate = configuredMarginPercent / 100;
-  const targetCommissionRate = feeDetails.commissionRate / 100;
-  const targetFixedFee = feeDetails.fixedFee + feeDetails.cpfTax;
-  
-  const divisor = 1 - targetMarginRate - targetCommissionRate;
   let suggestedSalePrice = shopeePrice;
-  
-  if (divisor > 0.01) {
-    suggestedSalePrice = (gobooxCost + actualShippingCost + targetFixedFee) / divisor;
-  } else {
-    // Fallback if margin + commission is close to or above 100%
-    suggestedSalePrice = (gobooxCost + actualShippingCost + targetFixedFee) / 0.05;
+
+  // Let's determine the correct tier for suggested selling price dynamically to resolve circular references
+  const candidateTiers = [
+    { commissionRate: 0.25, fixedFee: 4.00, cpfTax: 0.00, minPrice: 0, maxPrice: 11.99 },
+    { commissionRate: 0.20, fixedFee: 4.00, cpfTax: customTarifaAdicional, minPrice: 12.00, maxPrice: 79.99 },
+    { commissionRate: 0.14, fixedFee: 16.00, cpfTax: customTarifaAdicional, minPrice: 80.00, maxPrice: 99.99 },
+    { commissionRate: 0.14, fixedFee: 20.00, cpfTax: customTarifaAdicional, minPrice: 100.00, maxPrice: 199.99 },
+    { commissionRate: 0.14, fixedFee: 26.00, cpfTax: customTarifaAdicional, minPrice: 200.00, maxPrice: Infinity }
+  ];
+
+  let foundSuggestedPrice = false;
+  for (const tier of candidateTiers) {
+    const divisor = 1 - targetMarginRate - tier.commissionRate;
+    if (divisor > 0.01) {
+      const candidatePrice = (gobooxCost + actualShippingCost + customFreteGratis + tier.fixedFee + tier.cpfTax) / divisor;
+      if (candidatePrice >= tier.minPrice && candidatePrice <= tier.maxPrice) {
+        suggestedSalePrice = candidatePrice;
+        foundSuggestedPrice = true;
+        break;
+      }
+    }
+  }
+
+  // Fallback if no matching tier was found (e.g. edge cases where boundaries overlap or margin is very high)
+  if (!foundSuggestedPrice) {
+    const targetCommissionRate = feeDetails.commissionRate / 100;
+    const targetFixedFee = feeDetails.fixedFee + (shopeePrice < 12 ? 0 : customTarifaAdicional);
+    const divisor = 1 - targetMarginRate - targetCommissionRate;
+    if (divisor > 0.01) {
+      suggestedSalePrice = (gobooxCost + actualShippingCost + customFreteGratis + targetFixedFee) / divisor;
+    } else {
+      suggestedSalePrice = (gobooxCost + actualShippingCost + customFreteGratis + targetFixedFee) / 0.05;
+    }
   }
   
   // Round all numbers to 2 decimal places for clean currency display
@@ -333,7 +335,6 @@ export function performCalculation(
     shopeePrice,
     gobooxCost,
     shopeeShippingCost: product.shopeeShippingCost,
-    useFreeShipping,
     
     commissionRatePercent: feeDetails.commissionRate,
     serviceRatePercent: 0, // no extra free shipping service fee
@@ -348,14 +349,7 @@ export function performCalculation(
     suggestedSalePrice: Math.round(suggestedSalePrice * 100) / 100,
     estimatedProfit: Math.round(estimatedProfit * 100) / 100,
     actualMarginPercent: Math.round(actualMarginPercent * 100) / 100,
-    isProfitable: estimatedProfit > 0 && actualMarginPercent >= configuredMarginPercent,
-
-    // Pix Subsidy details
-    pixSubsidyRate,
-    pixSubsidyAmount,
-    pixInvoiceValue,
-    pixCommissionAmount,
-    pixInvoiceMarginPercent
+    isProfitable: estimatedProfit > 0 && actualMarginPercent >= configuredMarginPercent
   };
 }
 

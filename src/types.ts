@@ -42,7 +42,6 @@ export interface CalculationDetails {
   shopeePrice: number;
   gobooxCost: number;
   shopeeShippingCost: number;
-  useFreeShipping: boolean;
   
   // Shopee rates/fees
   commissionRatePercent: number; // e.g. 12%
@@ -60,13 +59,6 @@ export interface CalculationDetails {
   estimatedProfit: number; // shopeePrice - totalCost
   actualMarginPercent: number; // (estimatedProfit / shopeePrice) * 100
   isProfitable: boolean;
-
-  // Pix Subsidy details
-  pixSubsidyRate: number; // e.g. 0.05 or 0.08
-  pixSubsidyAmount: number; // e.g. R$ 40
-  pixInvoiceValue: number; // e.g. R$ 460
-  pixCommissionAmount: number; // e.g. R$ 56
-  pixInvoiceMarginPercent: number; // e.g. 88%
 }
 
 export interface CalculationHistoryLog {
