@@ -31,11 +31,13 @@ import {
   ShoppingBag,
   Info,
   Layers,
-  ArrowUpDown
+  ArrowUpDown,
+  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { MOCK_PRODUCTS, performCalculation, formatCurrency } from './data';
+import { MOCK_PRODUCTS, performCalculation, formatCurrency, getShopeeFeeDetails, findMarginForDesiredProfit } from './data';
 import { Product, CalculationDetails, Supplier, AccountConnection, CalculationHistoryLog } from './types';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 export default function App() {
   // --- Account State ---
@@ -65,6 +67,7 @@ export default function App() {
   const [serviceRate, setServiceRate] = useState<number>(2); // extra service rate 2%
   const [paymentFeeFlat, setPaymentFeeFlat] = useState<number>(2.50); // custom flat transaction fee R$ 2,50
   const [shopeeShippingMode, setShopeeShippingMode] = useState<'normal' | 'free'>('free'); // standard free shipping default
+  const [usePixSubsidy, setUsePixSubsidy] = useState<boolean>(true); // Pix subsidy inclusion toggle (true by default)
 
   // --- Search and Filtration State ---
   const [searchTerm, setSearchTerm] = useState('');
@@ -72,6 +75,7 @@ export default function App() {
   const [selectedSupplier, setSelectedSupplier] = useState<string>('Todos'); // 'Todos' | 'GOFLASH' | 'GP000'
   const [minMarginFilter, setMinMarginFilter] = useState<number>(0);
   const [priceRange, setPriceRange] = useState({ min: 0, max: 250 });
+  const [minSalesFilter, setMinSalesFilter] = useState<number>(40); // Critério Shopee: mais de 40 vendas em 30 dias
 
   // --- Active State ---
   const [currentProducts, setCurrentProducts] = useState<Product[]>(MOCK_PRODUCTS);
@@ -87,6 +91,8 @@ export default function App() {
   // Simulation parameters for currently calculated item overrides (if any, though user primarily controls margin)
   const [simulatedShopeePrice, setSimulatedShopeePrice] = useState<number>(MOCK_PRODUCTS[0].shopeePrice);
   const [simulatedGobooxCost, setSimulatedGobooxCost] = useState<number>(MOCK_PRODUCTS[0].gobooxCost);
+  const [overrideSuggestedPrice, setOverrideSuggestedPrice] = useState<number | null>(null);
+  const [editablePriceInput, setEditablePriceInput] = useState<string>('');
 
   // --- Live Alerts/Notifications ---
   const [notifications, setNotifications] = useState<Array<{ id: string; text: string; time: string }>>([
@@ -156,6 +162,8 @@ export default function App() {
     if (selectedProduct) {
       setSimulatedShopeePrice(selectedProduct.shopeePrice);
       setSimulatedGobooxCost(selectedProduct.gobooxCost);
+      setOverrideSuggestedPrice(null);
+      setEditablePriceInput('');
     }
   }, [selectedProduct]);
 
@@ -177,6 +185,11 @@ export default function App() {
       setServiceRate(0);
     }
     triggerNotification(`Modo de frete Shopee definido como: ${mode === 'free' ? 'Frete Grátis (+2% serv.)' : 'Frete Normal (0% serv.)'}`);
+  };
+
+  const handleSetPixSubsidy = (active: boolean) => {
+    setUsePixSubsidy(active);
+    triggerNotification(`Subsídio Pix definido como: ${active ? 'ATIVADO (Com Subsídio nos cálculos)' : 'DESATIVADO (Sem Subsídio nos cálculos)'}`);
   };
 
   // Save/modify connections
@@ -265,10 +278,10 @@ export default function App() {
     return ['Todos', ...Array.from(list)];
   }, [currentProducts]);
 
-  // --- Dual calculation mapper (With vs Free shipping calculations processed simultaneously) ---
+  // --- Dual calculation mapper (Now simplified/aligned to CPF standard model only) ---
   const computedProductList = useMemo(() => {
     return currentProducts.map(product => {
-      // 1. Scene WITH target shipping (com frete regular)
+      // Both calculation versions are now mapped to CPF-based standard shipping calculation
       const calculationRegularShipping = performCalculation(
         product,
         globalDesiredMargin,
@@ -278,11 +291,10 @@ export default function App() {
         paymentFeeFlat
       );
 
-      // 2. Scene WITH Free shipping (com frete grátis)
       const calculationFreeShipping = performCalculation(
         product,
         globalDesiredMargin,
-        true, // useFreeShipping = true
+        true, // useFreeShipping = true (Frete Grátis)
         commissionRate,
         serviceRate,
         paymentFeeFlat
@@ -296,7 +308,7 @@ export default function App() {
     });
   }, [currentProducts, globalDesiredMargin, commissionRate, serviceRate, paymentFeeFlat]);
 
-  // Filtered computed list based on state controls
+  // Filtered computed list based on state controls (Simplified search)
   const filteredProducts = useMemo(() => {
     return computedProductList.filter(item => {
       const matchSearch = item.product.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
@@ -304,15 +316,15 @@ export default function App() {
       
       const matchCategory = selectedCategory === 'Todos' || item.product.category === selectedCategory;
       const matchSupplier = selectedSupplier === 'Todos' || item.product.gobooxSupplier === selectedSupplier;
-      const matchMinMargin = item.calculationFreeShipping.actualMarginPercent >= minMarginFilter || 
-                             item.calculationRegularShipping.actualMarginPercent >= minMarginFilter;
+      const matchMinMargin = item.calculationRegularShipping.actualMarginPercent >= minMarginFilter;
       const matchPriceRange = item.product.shopeePrice >= priceRange.min && item.product.shopeePrice <= priceRange.max;
+      const matchSales = item.product.salesVolume > minSalesFilter;
 
-      return matchSearch && matchCategory && matchSupplier && matchMinMargin && matchPriceRange;
+      return matchSearch && matchCategory && matchSupplier && matchMinMargin && matchPriceRange && matchSales;
     });
-  }, [computedProductList, searchTerm, selectedCategory, selectedSupplier, minMarginFilter, priceRange]);
+  }, [computedProductList, searchTerm, selectedCategory, selectedSupplier, minMarginFilter, priceRange, minSalesFilter]);
 
-  // --- Selected Product Calculations (renders WITH and FREE SHIPPING scenarios side-by-side) ---
+  // --- Selected Product Calculations (Now simplified to CPF-based standard shipping calculation) ---
   const selectedProductCalculations = useMemo(() => {
     if (!selectedProduct) return null;
     
@@ -326,16 +338,16 @@ export default function App() {
     const regularCalc = performCalculation(
       regularProduct,
       globalDesiredMargin,
-      false, // useFreeShipping = false (Buyer Pays / Regular)
+      false, // useFreeShipping = false
       commissionRate,
       serviceRate,
       paymentFeeFlat
     );
 
-    const freeShippingCalc = performCalculation(
+    const freeCalc = performCalculation(
       regularProduct,
       globalDesiredMargin,
-      true, // useFreeShipping = true (Frete Grátis)
+      true, // useFreeShipping = true
       commissionRate,
       serviceRate,
       paymentFeeFlat
@@ -343,9 +355,14 @@ export default function App() {
 
     return {
       regular: regularCalc,
-      free: freeShippingCalc
+      free: freeCalc
     };
   }, [selectedProduct, simulatedShopeePrice, simulatedGobooxCost, globalDesiredMargin, commissionRate, serviceRate, paymentFeeFlat]);
+
+  const activeSelectedCalculation = useMemo(() => {
+    if (!selectedProductCalculations) return null;
+    return shopeeShippingMode === 'free' ? selectedProductCalculations.free : selectedProductCalculations.regular;
+  }, [selectedProductCalculations, shopeeShippingMode]);
 
   // Stats Counters
   const statistics = useMemo(() => {
@@ -365,6 +382,25 @@ export default function App() {
       gp000Count,
       avgMargin
     };
+  }, [filteredProducts]);
+
+  // Sort and extract top 5 profitable products for Recharts bar visualizer
+  const top5ChartData = useMemo(() => {
+    const productsWithProfit = filteredProducts.map(item => {
+      const p = item.product;
+      // Get the name of product truncated to fit nicely in charts
+      const baseName = p.name;
+      const shortName = baseName.length > 15 ? baseName.substring(0, 15) + '...' : baseName;
+      return {
+        name: baseName,
+        shortName,
+        profit: item.calculationRegularShipping.estimatedProfit
+      };
+    });
+
+    return [...productsWithProfit]
+      .sort((a, b) => b.profit - a.profit)
+      .slice(0, 5);
   }, [filteredProducts]);
 
   // Export report as CSV
@@ -410,10 +446,14 @@ export default function App() {
       name: trendItem.name,
       category: trendItem.category,
       popularityScore: 99,
-      salesVolume: 1250,
+      salesVolume: trendItem.salesVolume || 1250,
       imageUrl: trendItem.imageUrl || 'https://images.unsplash.com/photo-1546868871-7041f2a55e12?w=150&auto=format&fit=crop&q=60',
       rating: 4.9,
       shopeePrice: trendItem.shopeePrice,
+      shopeeMinPrice: trendItem.shopeeMinPrice || (trendItem.shopeePrice * 0.9),
+      shopeeMinSupplier: trendItem.shopeeMinSupplier || 'fornecedor_shopee_min',
+      shopeeMaxPrice: trendItem.shopeeMaxPrice || (trendItem.shopeePrice * 1.1),
+      shopeeMaxSupplier: trendItem.shopeeMaxSupplier || 'fornecedor_shopee_max',
       shopeeShippingCost: 12.00,
       hasFreeShippingBadge: true,
       gobooxName: trendItem.gobooxName,
@@ -431,7 +471,12 @@ export default function App() {
     {
       name: 'Carregador Portátil Power Bank 20000mAh Ultra Rápido',
       category: 'Eletrônicos',
+      salesVolume: 1800,
       shopeePrice: 149.00,
+      shopeeMinPrice: 139.00,
+      shopeeMinSupplier: 'distribuidora_sp',
+      shopeeMaxPrice: 159.00,
+      shopeeMaxSupplier: 'eletro_elite',
       cost: 65.00,
       supplier: 'GP000' as Supplier,
       gobooxName: 'Power Bank Max 20k Quick Charge 3.0 PD',
@@ -440,7 +485,12 @@ export default function App() {
     {
       name: 'Mini Mop Limpeza Fácil Dobrável Espuma Absorvente',
       category: 'Casa & Jardim',
+      salesVolume: 1250,
       shopeePrice: 34.00,
+      shopeeMinPrice: 28.00,
+      shopeeMinSupplier: 'lar_limpo_brazil',
+      shopeeMaxPrice: 40.00,
+      shopeeMaxSupplier: 'utilidades_lar_sp',
       cost: 11.80,
       supplier: 'GOFLASH' as Supplier,
       gobooxName: 'Mop Portátil Auto Expremedor Fácil Absorver',
@@ -651,9 +701,20 @@ export default function App() {
                   <Sliders size={15} className="text-emerald-400" />
                   Margem de Lucro Alvo
                 </h3>
-                <span className="font-mono text-emerald-400 font-bold text-xs bg-emerald-950/80 px-2.5 py-1 rounded-md border border-emerald-500/15">
-                  {globalDesiredMargin}% desejada
-                </span>
+                <div className="flex items-center gap-1 bg-emerald-950 border border-emerald-500/20 px-2 py-0.5 rounded-md font-mono text-xs text-emerald-400 font-bold">
+                  <input
+                    type="number"
+                    min="5"
+                    max="99"
+                    value={globalDesiredMargin}
+                    onChange={(e) => {
+                      const val = Math.min(99, Math.max(5, Number(e.target.value)));
+                      setGlobalDesiredMargin(val);
+                    }}
+                    className="w-8 bg-transparent text-emerald-400 font-mono font-bold text-xs text-right border-none outline-none focus:ring-0 p-0"
+                  />
+                  <span>% desejada</span>
+                </div>
               </div>
               
               <div className="py-2">
@@ -678,240 +739,394 @@ export default function App() {
                 </div>
               </div>
 
+              {/* DUAL INPUT FOR VALUE-BASED NET PROFIT */}
+              <div className="mt-4 pt-4 border-t border-slate-800/80 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-slate-400 font-sans">Lucro Líquido Unitário Desejado:</span>
+                  <span className="font-mono text-xs text-teal-400 font-bold">
+                    {activeSelectedCalculation 
+                      ? formatCurrency(Math.round(activeSelectedCalculation.suggestedSalePrice * (globalDesiredMargin / 100) * 100) / 100)
+                      : formatCurrency(0)}
+                  </span>
+                </div>
+                
+                <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-850 px-3 py-1.5 rounded-xl">
+                  <span className="text-xs text-slate-500 font-mono font-bold">R$</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="1000"
+                    step="0.5"
+                    value={
+                      activeSelectedCalculation 
+                        ? Math.round(activeSelectedCalculation.suggestedSalePrice * (globalDesiredMargin / 100) * 100) / 100 
+                        : 0
+                    }
+                    onChange={(e) => {
+                      const newProfit = Number(e.target.value);
+                      if (newProfit > 0 && selectedProduct) {
+                        const newMargin = findMarginForDesiredProfit(
+                          newProfit, 
+                          simulatedGobooxCost, 
+                          activeSelectedCalculation ? activeSelectedCalculation.actualShippingCost : selectedProduct.shopeeShippingCost
+                        );
+                        setGlobalDesiredMargin(newMargin);
+                      }
+                    }}
+                    className="w-full bg-transparent text-slate-100 font-mono font-bold text-xs border-none outline-none focus:ring-0 p-0"
+                  />
+                  <span className="text-[10px] text-slate-500 font-sans italic shrink-0">ajustar lucro</span>
+                </div>
+                {selectedProduct && (
+                  <p className="text-[9.5px] text-slate-500 font-sans leading-tight">
+                    *Calculado com base no custo atual de <strong>{formatCurrency(simulatedGobooxCost)}</strong> do produto selecionado.
+                  </p>
+                )}
+              </div>
+
               <p className="text-[11px] text-slate-400 mt-4 leading-relaxed bg-slate-950/60 p-3 rounded-xl border border-slate-850">
-                💡 Ao arrastar este controle, as tabelas de taxas com frete, com frete grátis e os preços sugeridos são instantaneamente reordenados em tempo real na tela.
+                💡 Ao digitar ou alterar a margem em (%) ou o lucro absoluto em (R$), todos os cálculos de taxas, lucros e sugestões de preços são updated instantaneamente em tempo real na tela.
               </p>
             </div>
 
-
-
-            {/* EDITABLE TAXAS SHOPEE SUMMARY */}
+            {/* PROGRAMA DE FRETE GRÁTIS TOGGLE CARD */}
             <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/80 shadow-md">
               <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-2.5">
                 <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                  <Percent size={14} className="text-amber-400" />
-                  Taxas da Shopee BR
+                  <Truck size={14} className="text-cyan-400 font-bold" />
+                  Programa Frete Grátis
                 </h3>
-                <span className="text-[9px] bg-emerald-950/80 text-emerald-400 px-2 py-0.5 rounded border border-emerald-500/20 font-mono font-bold">Editável</span>
+                <span className={`text-[9px] px-2 py-0.5 rounded border font-mono font-bold transition-all ${
+                  shopeeShippingMode === 'free' 
+                    ? 'bg-cyan-950/80 text-cyan-400 border-cyan-500/20' 
+                    : 'bg-slate-950 text-slate-500 border-slate-850'
+                }`}>
+                  {shopeeShippingMode === 'free' ? 'ATIVO' : 'INATIVO'}
+                </span>
               </div>
-              
-              <p className="text-[11px] text-slate-400 mb-4 leading-relaxed">
-                Escolha a modalidade de envio do portal para simular os custos e depois ajuste as tarifas conforme desejar:
-              </p>
 
-              {/* Escolha do Frete (Normal ou Grátis) */}
-              <div className="mb-4">
-                <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-850/80">
-                  <button
-                    type="button"
-                    onClick={() => handleSetShippingMode('normal')}
-                    className={`py-2 px-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all duration-200 cursor-pointer text-center ${
-                      shopeeShippingMode === 'normal'
-                        ? 'bg-amber-500 text-slate-950 shadow-md font-bold'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
-                    }`}
-                  >
-                    Frete Normal
-                  </button>
+              <div className="space-y-3">
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  Selecione se deseja aplicar o benefício do <strong>Programa de Frete Grátis</strong> nos cálculos de custos e preços sugeridos de venda:
+                </p>
+
+                <div className="grid grid-cols-2 bg-slate-950 p-1 rounded-xl border border-slate-850">
                   <button
                     type="button"
                     onClick={() => handleSetShippingMode('free')}
-                    className={`py-2 px-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all duration-200 cursor-pointer text-center ${
+                    className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                       shopeeShippingMode === 'free'
-                        ? 'bg-emerald-500 text-slate-950 shadow-md font-bold'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+                        ? 'bg-teal-500 text-slate-950 font-extrabold shadow-sm shadow-teal-900/30'
+                        : 'text-slate-400 hover:text-slate-200'
                     }`}
                   >
-                    Frete Grátis
+                    {shopeeShippingMode === 'free' && <Check size={12} />}
+                    <span>Sim (Aplicar)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetShippingMode('normal')}
+                    className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      shopeeShippingMode === 'normal'
+                        ? 'bg-slate-800 text-white font-extrabold border border-slate-700/80'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {shopeeShippingMode === 'normal' && <Check size={12} />}
+                    <span>Não (Regular)</span>
                   </button>
                 </div>
-                
-                <p className="text-[10px] text-slate-400 mt-2 italic">
-                  {shopeeShippingMode === 'free' ? (
-                    <span className="text-emerald-400">✓ Ativo: Programa Frete Grátis (+2% serv. padrão, frete zerado para margens)</span>
-                  ) : (
-                    <span className="text-amber-400">✓ Ativo: Frete Regular (0% extra serv. padrão, frete cobrado do cliente)</span>
-                  )}
-                </p>
-              </div>
 
-              <div className="space-y-3 pt-1">
-                <div className="flex items-center justify-between text-xs bg-slate-950 p-2.5 rounded-lg border border-slate-850">
-                  <span className="text-slate-400 font-medium">
-                    Comissão Shopee:
-                  </span>
-                  <div className="flex items-center gap-1 font-mono font-bold text-amber-400">
-                    <input 
-                      type="number"
-                      step="0.5"
-                      min="0"
-                      max="100"
-                      value={commissionRate}
-                      onChange={(e) => setCommissionRate(Math.max(0, Number(e.target.value)))}
-                      className="w-14 bg-slate-900 border border-slate-800 focus:border-amber-500 rounded px-1.5 py-0.5 text-right font-medium text-amber-400 focus:outline-none"
-                    />
-                    <span>%</span>
-                  </div>
+                <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-850 text-[10px] text-slate-400 leading-relaxed space-y-1.5">
+                  <p className="font-semibold text-slate-350 flex items-center gap-1 text-[11px]">
+                    <Info size={11} className="text-cyan-400 shrink-0" />
+                    Regra Oficial de Subsídios:
+                  </p>
+                  <ul className="list-disc leading-normal space-y-1 pl-4.5 font-sans text-slate-450 text-[10px]">
+                    <li>Até <strong>R$ 79,99</strong>: Cobre frete até <strong>R$ 20,00</strong></li>
+                    <li>De <strong>R$ 80 a R$ 199,99</strong>: Cobre frete até <strong>R$ 30,00</strong></li>
+                    <li>Acima de <strong>R$ 200,00</strong>: Cobre frete até <strong>R$ 40,00</strong></li>
+                  </ul>
+                  <p className="text-[9px] text-slate-500 italic mt-0.5">
+                    * O frete real é abatido pelo limite correspondente ao preço estimado.
+                  </p>
                 </div>
-
-                <div className="flex items-center justify-between text-xs bg-slate-950 p-2.5 rounded-lg border border-slate-850">
-                  <span className="text-slate-400 font-medium flex flex-col">
-                    <span>Taxa Adicional Serviço:</span>
-                    <span className="text-[9px] text-slate-500 normal-case font-normal">(Frete Grátis)</span>
-                  </span>
-                  <div className="flex items-center gap-1 font-mono font-bold text-amber-400">
-                    <input 
-                      type="number"
-                      step="0.5"
-                      min="0"
-                      max="100"
-                      value={serviceRate}
-                      onChange={(e) => setServiceRate(Math.max(0, Number(e.target.value)))}
-                      className="w-14 bg-slate-900 border border-slate-800 focus:border-amber-500 rounded px-1.5 py-0.5 text-right font-medium text-amber-400 focus:outline-none"
-                    />
-                    <span>%</span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-xs bg-slate-950 p-2.5 rounded-lg border border-slate-850">
-                  <span className="text-slate-400 font-medium">
-                    Tarifa Transação (Fixo):
-                  </span>
-                  <div className="flex items-center gap-1 font-mono font-bold text-amber-400">
-                    <span className="text-[10px] text-slate-500">R$</span>
-                    <input 
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="100"
-                      value={paymentFeeFlat}
-                      onChange={(e) => setPaymentFeeFlat(Math.max(0, Number(e.target.value)))}
-                      className="w-14 bg-slate-900 border border-slate-800 focus:border-amber-500 rounded px-1.5 py-0.5 text-right font-medium text-amber-400 focus:outline-none"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 pt-3 border-t border-slate-800">
-                <span className="text-[10px] text-slate-500 block leading-tight">
-                  *Comissão e taxas adicionais somam {(commissionRate + serviceRate).toFixed(1)}% do portal mais tarifa fixa de {formatCurrency(paymentFeeFlat)} por venda.
-                </span>
               </div>
             </div>
 
-            {/* Quick Filter Section */}
+            {/* SIMULAÇÃO DO SUBSÍDIO DO PIX TOGGLE CARD */}
             <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/80 shadow-md">
-              <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2 mb-3 border-b border-slate-800 pb-2.5">
-                <Filter size={14} className="text-cyan-400" />
-                Refinar Listagens
-              </h3>
+              <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-2.5">
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                  <Percent size={14} className="text-teal-400 font-bold" />
+                  Subsídio do Pix (Shopee)
+                </h3>
+                <span className={`text-[9px] px-2 py-0.5 rounded border font-mono font-bold transition-all ${
+                  usePixSubsidy 
+                    ? 'bg-teal-950/80 text-teal-400 border-teal-500/20' 
+                    : 'bg-slate-950 text-slate-500 border-slate-850'
+                }`}>
+                  {usePixSubsidy ? 'ATIVO' : 'INATIVO'}
+                </span>
+              </div>
 
-              <div className="space-y-4">
-                {/* Fornecedor Selection (GOFLASH, GP000) */}
-                <div>
-                  <label className="block text-[11px] text-slate-400 mb-1.5">Fornecedor Goboox:</label>
-                  <div className="grid grid-cols-3 gap-1">
-                    {['Todos', 'GOFLASH', 'GP000'].map((supp) => (
-                      <button
-                        key={supp}
-                        onClick={() => {
-                          setSelectedSupplier(supp);
-                          triggerSearch();
-                        }}
-                        className={`text-[9px] py-1 rounded-md font-mono font-medium border transition cursor-pointer ${
-                          selectedSupplier === supp 
-                            ? 'bg-slate-800 border-cyan-500/50 text-cyan-400 font-bold' 
-                            : 'bg-slate-950 border-slate-850 text-slate-500 hover:border-slate-800 hover:text-slate-300'
-                        }`}
-                      >
-                        {supp}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+              <div className="space-y-3">
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  Escolha se deseja calcular os custos de comissão e notas fiscais considerando o <strong>Subsídio Pix oficial da Shopee (5% ou 8%)</strong>:
+                </p>
 
-                {/* Categoria Filter */}
-                <div>
-                  <label className="block text-[11px] text-slate-400 mb-1.5">Mapear por Categoria:</label>
-                  <select 
-                    value={selectedCategory} 
-                    onChange={(e) => {
-                      setSelectedCategory(e.target.value);
-                      triggerSearch();
-                    }}
-                    className="w-full bg-slate-950 border border-slate-850 focus:border-emerald-500 rounded-lg py-2 px-3 text-xs text-slate-300 focus:outline-none cursor-pointer"
+                <div className="grid grid-cols-2 bg-slate-950 p-1 rounded-xl border border-slate-850">
+                  <button
+                    type="button"
+                    onClick={() => handleSetPixSubsidy(true)}
+                    className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      usePixSubsidy
+                        ? 'bg-teal-500 text-slate-950 font-extrabold shadow-sm shadow-teal-900/30'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
                   >
-                    {categories.map((cat) => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
+                    {usePixSubsidy && <Check size={12} />}
+                    <span>Sim (Aplicar)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetPixSubsidy(false)}
+                    className={`flex items-center justify-center gap-1 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                      !usePixSubsidy
+                        ? 'bg-slate-800 text-white font-extrabold border border-slate-700/80'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {!usePixSubsidy && <Check size={12} />}
+                    <span>Não (Normal)</span>
+                  </button>
                 </div>
 
-                {/* Margem Mínima slider filter */}
+                <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-850 text-[10px] text-slate-400 leading-relaxed space-y-1.5">
+                  <div className="flex items-center gap-1 mb-1 font-semibold text-slate-300">
+                    <Zap size={11} className="text-teal-400 shrink-0" />
+                    <span>Impacto Simulado:</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-normal">
+                    Se ativado, as taxas de comissão listadas no painel serão reduzidas pelo subsídio, e o valor líquido na NF será ajustado com desconto de <strong>5% (vendas &lt; R$500)</strong> ou <strong>8% (vendas &ge; R$500)</strong>.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* CRITÉRIO DE ESCOLHA SHOPEE REGULATION CARD */}
+            <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/80 shadow-md">
+              <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-2.5">
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                  <ShoppingBag size={14} className="text-amber-400 font-bold" />
+                  Critério de Escolha (Shopee)
+                </h3>
+                <span className="text-[10px] bg-emerald-950/80 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/15 font-mono font-bold animate-pulse">
+                  &gt; {minSalesFilter} vendas
+                </span>
+              </div>
+              
+              <div className="space-y-4">
                 <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-slate-400">Margem Mínima Real Filtro:</span>
-                    <span className="font-mono text-cyan-400 font-semibold">{minMarginFilter}%</span>
+                  <div className="flex justify-between text-xs mb-1.5">
+                    <span className="text-slate-400 font-sans">Vendas mínimas nos últimos 30 dias:</span>
+                    <span className="font-mono text-emerald-400 font-bold">{minSalesFilter} un/mês</span>
                   </div>
                   <input 
                     type="range" 
-                    min="-20" 
-                    max="40" 
+                    min="10" 
+                    max="500" 
                     step="5" 
-                    value={minMarginFilter} 
-                    onChange={(e) => setMinMarginFilter(Number(e.target.value))}
-                    className="w-full h-1 bg-slate-800 rounded appearance-none cursor-pointer accent-cyan-500"
+                    value={minSalesFilter} 
+                    onChange={(e) => {
+                      setMinSalesFilter(Number(e.target.value));
+                    }}
+                    className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   />
+                  <div className="flex justify-between text-[9px] text-slate-500 mt-1.5 font-mono">
+                    <span>10 un</span>
+                    <span>250 un</span>
+                    <span>500 un</span>
+                  </div>
+                </div>
+
+                <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-850 text-[11px] text-slate-400 leading-normal space-y-1">
+                  <p className="font-bold text-slate-300">✓ Filtro Ativo Obrigatório:</p>
+                  <p>Mapeia e valida apenas os produtos de alta performance com relevante giro de mercado (&gt;{minSalesFilter} vendas em 30d).</p>
                 </div>
               </div>
-              
-              <div className="mt-4 pt-3.5 border-t border-slate-800 text-center">
-                <button
-                  onClick={() => {
-                    setSelectedCategory('Todos');
-                    setSelectedSupplier('Todos');
-                    setMinMarginFilter(-20);
-                    setPriceRange({ min: 0, max: 250 });
-                    setSearchTerm('');
-                    triggerNotification('Filtros restaurados!');
-                  }}
-                  className="text-[10px] text-rose-400 font-sans hover:underline cursor-pointer"
-                >
-                  Restaurar Filtros Completos
-                </button>
-              </div>
-
             </div>
 
-            {/* Dica de Topologia de Nicho (Dicas Dinâmicas de Arbitragem por Categoria) */}
-            {selectedProduct && (
-              <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/80 shadow-md">
-                {(() => {
-                  const tip = getTopologyTip(selectedProduct);
-                  return (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-                        <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
-                          <CheckCircle2 size={13} className="text-emerald-400" />
-                          Topologia Relevante
-                        </h3>
-                        <span className="text-[9px] bg-slate-950 px-2 py-0.5 rounded border border-slate-850 font-mono text-cyan-400 font-bold">
-                          {selectedProduct.category}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-200 font-bold leading-normal">
-                        {tip.title}
-                      </p>
-                      <p className="text-[11.5px] text-slate-400 leading-relaxed font-sans">
-                        {tip.desc}
-                      </p>
-                      <div className="bg-slate-950 p-2.5 rounded border border-slate-850 text-[10.5px] text-slate-300 font-sans">
-                        <strong className="text-emerald-400 text-[10px] block uppercase mb-1 font-bold tracking-wider">Tip de Arbitragem:</strong>
-                        {tip.advice}
-                      </div>
+
+
+
+
+            {/* SHOPEE CPF FEES SUMMARY FOR SELECTED PRODUCT */}
+            {selectedProduct && activeSelectedCalculation && (
+              <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800/85 shadow-md space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                  <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-2">
+                    <Percent size={14} className="text-amber-400" />
+                    Taxas da Shopee BR (CPF)
+                  </h3>
+                  <span className="text-[9px] bg-amber-950/80 text-amber-400 px-2 py-0.5 rounded border border-amber-500/20 font-mono font-bold">Oficial</span>
+                </div>
+                
+                <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/60 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 font-mono">Simulação de Preço Sugerido:</span>
+                    {overrideSuggestedPrice !== null && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOverrideSuggestedPrice(null);
+                          setEditablePriceInput('');
+                          triggerNotification('Restaurado para o preço calculado pelo sistema!');
+                        }}
+                        className="text-[10px] text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1 transition cursor-pointer bg-amber-950/40 border border-amber-500/20 px-2.5 py-1 rounded-md"
+                      >
+                        <RefreshCw size={10} className="shrink-0" />
+                        Restaurar Padrão (Calcular)
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <div className="relative flex items-center max-w-[180px]">
+                      <span className="absolute left-3 text-xs font-bold text-slate-500">R$</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        value={editablePriceInput !== '' ? editablePriceInput : (overrideSuggestedPrice !== null ? overrideSuggestedPrice : activeSelectedCalculation.suggestedSalePrice).toFixed(2)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setEditablePriceInput(val);
+                          const parsed = parseFloat(val);
+                          if (!isNaN(parsed) && parsed > 0) {
+                            setOverrideSuggestedPrice(parsed);
+                          } else {
+                            setOverrideSuggestedPrice(null);
+                          }
+                        }}
+                        className="w-full pl-9 pr-3 py-1.5 bg-slate-900 border border-slate-700/80 hover:border-slate-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg text-xs font-bold font-mono text-white transition-all shadow-inner placeholder-slate-600"
+                        placeholder={activeSelectedCalculation.suggestedSalePrice.toFixed(2)}
+                      />
                     </div>
-                  );
-                })()}
+                    <span className="text-[10px] text-slate-500 font-medium uppercase font-mono">
+                      {overrideSuggestedPrice !== null ? '📝 Sobrescrito Manual' : '⚙️ Calculado p/ margem'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* COMPARATIVE PIX SUBSIDY TABLE (AS SHOWN IN THE RULES IMAGE) */}
+                <div className="overflow-hidden rounded-xl border border-slate-800/60 bg-slate-950/45 text-[11px]">
+                  <div className="grid grid-cols-3 bg-slate-950/90 text-[10px] font-bold text-slate-400 border-b border-slate-800/70 p-2 font-mono">
+                    <div>MÉTRICA</div>
+                    <div className={`text-center font-bold transition-all py-1 rounded ${!usePixSubsidy ? 'text-emerald-400 bg-emerald-950/35 border border-emerald-500/20' : 'text-slate-500'}`}>
+                      CARTÃO / BOLETO {!usePixSubsidy && '• ATIVO'}
+                    </div>
+                    <div className={`text-center font-bold transition-all py-1 rounded ${usePixSubsidy ? 'text-teal-400 bg-teal-950/35 border border-teal-500/20' : 'text-slate-500'}`}>
+                      PAGAMENTO POR PIX {usePixSubsidy && '• ATIVO'}
+                    </div>
+                  </div>
+ 
+                  {(() => {
+                    const price = overrideSuggestedPrice !== null ? overrideSuggestedPrice : activeSelectedCalculation.suggestedSalePrice;
+                    const subRate = price < 80 ? 0 : (price < 500 ? 0.05 : 0.08);
+                    const subAmount = price * subRate;
+                    const nfValue = price - subAmount;
+                    const regFees = getShopeeFeeDetails(price).totalFee;
+                    const pixFees = Math.max(0, regFees - subAmount);
+                    const netReceivedFromShopee = price - regFees; // same for both
+                    const cardKeepRate = price > 0 ? (netReceivedFromShopee / price) * 100 : 0;
+                    const pixKeepRate = nfValue > 0 ? (netReceivedFromShopee / nfValue) * 100 : 0;
+
+                    // Extra simulated profit details from custom price
+                    const costOfGoods = simulatedGobooxCost;
+                    const shipping = activeSelectedCalculation.actualShippingCost;
+                    const customProfit = netReceivedFromShopee - costOfGoods - shipping;
+                    const realMarginCard = price > 0 ? (customProfit / price) * 100 : 0;
+                    const realMarginPix = nfValue > 0 ? (customProfit / nfValue) * 100 : 0;
+
+                    return (
+                      <div className="divide-y divide-slate-850/60 font-sans">
+                        {/* 1. Valor item cadastrado */}
+                        <div className="grid grid-cols-3 p-2 font-mono text-[10.5px]">
+                          <span className="text-slate-400">Cadastrado no Sistema</span>
+                          <span className={`text-center font-semibold ${!usePixSubsidy ? 'text-emerald-300 font-bold bg-emerald-950/15 rounded' : 'text-slate-400'}`}>{formatCurrency(price)}</span>
+                          <span className={`text-center font-semibold ${usePixSubsidy ? 'text-teal-400 font-bold bg-teal-950/20 rounded' : 'text-slate-500'}`}>{formatCurrency(price)}</span>
+                        </div>
+                        {/* 2. Subsídio Pix */}
+                        <div className="grid grid-cols-3 p-2 font-mono text-[10.5px]">
+                          <span className="text-slate-400">Subsídio Pix ({(subRate * 100).toFixed(0)}%)</span>
+                          <span className={`text-center ${!usePixSubsidy ? 'text-emerald-300 bg-emerald-950/15 rounded font-semibold' : 'text-slate-600'}`}>R$ 0,00</span>
+                          <span className={`text-center font-bold ${usePixSubsidy ? 'text-emerald-400 bg-teal-950/20 rounded font-bold' : 'text-slate-500'}`}>-{formatCurrency(subAmount)}</span>
+                        </div>
+                        {/* 3. Valor NF */}
+                        <div className="grid grid-cols-3 p-2 font-mono text-[10.5px]">
+                          <span className="text-slate-400">Valor na Nota Fiscal</span>
+                          <span className={`text-center font-semibold ${!usePixSubsidy ? 'text-emerald-300 font-bold bg-emerald-950/15 rounded' : 'text-slate-400'}`}>{formatCurrency(price)}</span>
+                          <span className={`text-center font-bold ${usePixSubsidy ? 'text-white bg-teal-950/20 rounded font-extrabold' : 'text-slate-500'}`}>{formatCurrency(nfValue)}</span>
+                        </div>
+                        {/* 4. Comissão Shopee */}
+                        <div className="grid grid-cols-3 p-2 font-mono text-[10.5px]">
+                          <span className="text-slate-400">Comissão Retida</span>
+                          <span className={`text-center font-semibold ${!usePixSubsidy ? 'text-rose-500 font-bold bg-rose-955/10 rounded' : 'text-slate-500'}`}>-{formatCurrency(regFees)}</span>
+                          <span className={`text-center font-semibold ${usePixSubsidy ? 'text-emerald-400 font-bold bg-teal-950/20 rounded' : 'text-slate-500'}`}>-{formatCurrency(pixFees)}</span>
+                        </div>
+                        {/* 5. Valor líquido recebido */}
+                        <div className="grid grid-cols-3 p-2.5 font-bold font-mono bg-indigo-950/15 border-t border-indigo-500/10 text-[11px]">
+                          <span className="text-indigo-400 font-sans font-bold">Líquido Recebido</span>
+                          <span className={`text-center ${!usePixSubsidy ? 'text-indigo-300 font-extrabold bg-indigo-950/30 rounded' : 'text-indigo-550 font-medium'}`}>{formatCurrency(netReceivedFromShopee)}</span>
+                          <span className={`text-center ${usePixSubsidy ? 'text-indigo-300 font-extrabold bg-indigo-950/30 rounded' : 'text-indigo-550 font-medium'}`}>{formatCurrency(netReceivedFromShopee)}</span>
+                        </div>
+                        {/* 6. Keep Rate */}
+                        <div className="grid grid-cols-3 p-2.5 font-mono bg-slate-950 text-[10px]">
+                          <span className="text-slate-450 font-sans flex items-center gap-1 leading-tight">
+                            Aproveito Fiscal %:
+                          </span>
+                          <span className={`text-center font-semibold ${!usePixSubsidy ? 'text-emerald-300 font-bold bg-emerald-950/15 rounded' : 'text-slate-500'}`}>{cardKeepRate.toFixed(1)}%</span>
+                          <span className={`text-center font-extrabold ${usePixSubsidy ? 'text-emerald-400 font-bold bg-teal-950/20 rounded' : 'text-slate-500'}`}>{pixKeepRate.toFixed(1)}%</span>
+                        </div>
+                        {/* 7. Margem Realizada */}
+                        <div className="grid grid-cols-3 p-2.5 font-bold font-mono bg-slate-900 border-t border-slate-800/80 text-[10px]">
+                          <span className="text-slate-400 font-sans flex items-center gap-1 leading-tight">
+                            <Zap size={10} className="text-amber-400 shrink-0" />
+                            Margem Realizada:
+                          </span>
+                          <span className={`text-center text-[10.5px] font-bold ${!usePixSubsidy ? 'text-amber-400 font-extrabold bg-amber-950/20 rounded-md py-0.5' : 'text-slate-500'}`}>
+                            {realMarginCard.toFixed(1)}% ({formatCurrency(customProfit)})
+                          </span>
+                          <span className={`text-center text-[10.5px] font-bold ${usePixSubsidy ? 'text-teal-400 font-extrabold bg-teal-950/35 rounded-md py-0.5' : 'text-slate-500'}`}>
+                            {realMarginPix.toFixed(1)}% ({formatCurrency(customProfit)})
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* INFO NOTES ON PIX RULES */}
+                <div className="bg-slate-950/70 p-3 rounded-xl border border-slate-850/80 text-[10.5px] leading-relaxed text-slate-400 space-y-1">
+                  <p className="font-bold text-slate-300 flex items-center gap-1 text-[11px]">
+                    <Info size={12} className="text-teal-400" />
+                    Como funciona o Subsídio do Pix?
+                  </p>
+                  <p>A Shopee oferece descontos de 5% ou 8% na nota fiscal para pagamentos por Pix. O seu repasse líquido continua igual, mas a Shopee transfere o subsídio reduzindo proporcionalmente a sua comissão retida!</p>
+                  <p className="mt-1 font-mono text-[9px] text-slate-500">Regra Oficial: R$80 a R$499,99 = 5% subsídio | &gt;= R$500 = 8% subsídio</p>
+                </div>
+
+                <div className="pt-1.5 border-t border-slate-800/80 text-[10px] text-slate-500 leading-normal space-y-2">
+                  <p>📊 <strong>Grade de Comissões Shopee CPF:</strong></p>
+                  <ul className="list-disc list-inside space-y-1 pl-1 font-mono text-[9px]">
+                    <li>Abaixo de R$ 12: comissão de 25% + R$ 4,00</li>
+                    <li>Entre R$ 12 e R$ 79,99: 20% + R$ 7,00</li>
+                    <li>R$ 80 a R$ 99,99: 14% + R$ 19,00</li>
+                    <li>R$ 100 a R$ 199,99: 14% + R$ 23,00</li>
+                    <li>Acima de R$ 200: 14% + R$ 29,00</li>
+                  </ul>
+                </div>
               </div>
             )}
 
@@ -939,6 +1154,61 @@ export default function App() {
                 <Download size={14} />
                 <span>Exportar Relatório</span>
               </button>
+            </div>
+
+            {/* TOP 5 RENTABILIDADE CHART (RECHARTS) */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl shadow-lg">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-4 border-b border-slate-800 pb-3">
+                <div>
+                  <h3 className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
+                    <TrendingUp size={16} className="text-emerald-400 font-bold" />
+                    Top 5 Produtos por Lucro Líquido Unitário
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">Comparativo do retorno unitário real sob o modelo de comissão CPF da Shopee</p>
+                </div>
+                <span className="text-[10px] w-fit sm:self-center bg-emerald-950/80 text-emerald-400 px-2.5 py-1 rounded-md border border-emerald-500/15 font-mono font-semibold">
+                  Mapeamento em Tempo Real
+                </span>
+              </div>
+
+              {/* Chart Implementation with Recharts */}
+              <div className="h-48 w-full text-slate-350 pt-2">
+                {filteredProducts.length === 0 ? (
+                  <div className="h-full flex items-center justify-center text-xs text-slate-500 italic">
+                    Sem produtos disponíveis para gerar o gráfico de lucro.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={top5ChartData} margin={{ top: 10, right: 10, left: -15, bottom: 5 }}>
+                      <XAxis 
+                        dataKey="shortName" 
+                        tick={{ fill: '#94a3b8', fontSize: 10 }}
+                        axisLine={{ stroke: '#334155' }}
+                        tickLine={{ stroke: '#334155' }}
+                      />
+                      <YAxis 
+                        tick={{ fill: '#94a3b8', fontSize: 10 }}
+                        axisLine={{ stroke: '#334155' }}
+                        tickLine={{ stroke: '#334155' }}
+                        unit="R$"
+                      />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '12px', fontSize: '11px' }}
+                        itemStyle={{ color: '#10b981' }}
+                        formatter={(value: any) => [`R$ ${Number(value).toFixed(2)}`, 'Lucro Líquido Unitário']}
+                      />
+                      <Bar dataKey="profit" radius={[4, 4, 0, 0]} barSize={28}>
+                        {top5ChartData.map((entry, index) => (
+                          <Cell 
+                            key={`cell-${index}`} 
+                            fill={index === 0 ? '#10b981' : index === 1 ? '#0d9488' : index === 2 ? '#0f766e' : index === 3 ? '#14b8a6' : '#2dd4bf'} 
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
             </div>
 
             {/* RADAR SEARCH VISUAL FEEDBACK SCREEN (Solves user: "Não dá para saber se foi buscado ou não") */}
@@ -1082,46 +1352,65 @@ export default function App() {
                               <div className="absolute top-0 right-0 h-1.5 w-24 bg-gradient-to-r from-emerald-500 to-teal-500"></div>
                             )}
 
-                            {/* --- DETAILED LAYOUT ALWAYS (4-Column Grid com Preço Sugerido atualizado) --- */}
+                            {/* --- DETAILED LAYOUT ALWAYS --- */}
                             <div className="p-4">
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-[10px] text-slate-400 font-mono bg-slate-950 py-0.5 px-2 rounded border border-slate-850">
                                   {product.category}
                                 </span>
                                 
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-[9px] bg-slate-950 border border-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-mono">
-                                    ★ {product.rating}
-                                  </span>
-                                  <span className="text-[9px] px-2 py-0.5 font-mono text-cyan-400 bg-cyan-950/30 border border-cyan-850/20 rounded font-semibold truncate">
-                                    GBX: {product.gobooxSupplier}
-                                  </span>
-                                </div>
+                                <span className="text-[9.5px] px-2 py-0.5 font-mono text-cyan-400 bg-cyan-950/30 border border-cyan-850/20 rounded font-semibold truncate">
+                                  Goboox: {product.gobooxSupplier}
+                                </span>
                               </div>
 
                               <h4 className="text-xs font-bold text-slate-100 line-clamp-1 mb-2.5">
                                 {product.name}
                               </h4>
 
-                              <div className="grid grid-cols-4 gap-1 p-2 bg-slate-950 rounded-lg border border-slate-900 mb-3 text-center">
-                                <div>
-                                  <span className="text-[8px] text-slate-500 block uppercase font-bold tracking-wider font-mono leading-tight">Preço Shopee</span>
-                                  <div className="text-[10px] sm:text-xs font-mono font-bold text-slate-300 mt-0.5">
-                                    {formatCurrency(product.shopeePrice)}
+                              {/* Located on Shopee info block */}
+                              <div className="bg-slate-950/90 rounded-xl p-3 border border-slate-850/80 text-xs mb-3.5 space-y-2">
+                                <div className="flex items-center justify-between text-[11px] border-b border-slate-850/40 pb-1.5 mb-1">
+                                  <span className="text-amber-400 font-bold flex items-center gap-1">
+                                    <ShoppingBag size={12} />
+                                    Vendas nos últimos 30 dias:
+                                  </span>
+                                  <span className="font-mono font-bold text-white bg-amber-950/60 border border-amber-500/10 px-2 py-0.5 rounded-md">
+                                    {product.salesVolume} un
+                                  </span>
+                                </div>
+                                
+                                <div className="grid grid-cols-2 gap-2 text-[10px] font-mono leading-relaxed text-slate-300">
+                                  <div>
+                                    <span className="text-slate-500 block text-[9px] uppercase font-bold">Mínimo Encontrado:</span>
+                                    <span className="text-emerald-400 font-bold">{formatCurrency(product.shopeeMinPrice)}</span>
+                                    <span className="text-slate-500 text-[8px] block truncate">Fornecedor: {product.shopeeMinSupplier}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-500 block text-[9px] uppercase font-bold">Máximo Encontrado:</span>
+                                    <span className="text-rose-400 font-bold">{formatCurrency(product.shopeeMaxPrice)}</span>
+                                    <span className="text-slate-500 text-[8px] block truncate">Fornecedor: {product.shopeeMaxSupplier}</span>
                                   </div>
                                 </div>
+                                
+                                <div className="flex items-center justify-between bg-slate-900/60 p-2 rounded-lg border border-slate-800 text-[10px]">
+                                  <span className="text-slate-400 font-medium font-sans">Valor Médio Calculado:</span>
+                                  <span className="font-mono font-bold text-teal-400">{formatCurrency(product.shopeePrice)}</span>
+                                </div>
+                              </div>
 
-                                <div className="border-l border-slate-900">
+                              <div className="grid grid-cols-3 gap-1 p-2 bg-slate-950 rounded-lg border border-slate-900 mb-3 text-center">
+                                <div>
                                   <span className="text-[8px] text-slate-500 block uppercase font-bold tracking-wider font-mono leading-tight">Custo Goboox</span>
                                   <div className="text-[10px] sm:text-xs font-mono font-bold text-slate-200 mt-0.5">
                                     {formatCurrency(product.gobooxCost)}
                                   </div>
                                 </div>
 
-                                <div className={`border-l border-slate-900 rounded px-0.5 ${shopeeShippingMode === 'free' ? 'bg-emerald-500/5' : 'bg-amber-500/5'}`}>
-                                  <span className={`text-[8px] block uppercase font-bold tracking-wider font-mono leading-tight ${shopeeShippingMode === 'free' ? 'text-emerald-400' : 'text-amber-400'}`}>Sugestão Venda</span>
-                                  <div className={`text-[10px] sm:text-xs font-mono font-bold mt-0.5 ${shopeeShippingMode === 'free' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                    {formatCurrency(activeCalc.suggestedSalePrice)}
+                                <div className="border-l border-slate-900 bg-amber-500/5">
+                                  <span className="text-[8px] block uppercase font-bold tracking-wider font-mono text-amber-400 leading-tight">Sugestão de Venda</span>
+                                  <div className="text-[10px] sm:text-xs font-mono font-bold mt-0.5 text-amber-400">
+                                    {formatCurrency(activeCalc.suggestedSalePrice)}{usePixSubsidy && <span className="block text-[7.5px] text-teal-400 font-sans leading-none mt-0.5 font-bold">NF Pix: {formatCurrency(activeCalc.suggestedSalePrice - (activeCalc.suggestedSalePrice * (activeCalc.suggestedSalePrice < 80 ? 0 : (activeCalc.suggestedSalePrice < 500 ? 5 : 8) / 100)))}</span>}
                                   </div>
                                 </div>
 
@@ -1136,13 +1425,13 @@ export default function App() {
                               </div>
 
                               <div className="flex items-center justify-between pt-1 border-t border-slate-850/60 mt-1">
-                                <span className="text-[10px] text-slate-500 font-sans">
-                                  Goboox: <strong className="text-slate-300 text-[10px] font-mono">{product.gobooxName}</strong>
+                                <span className="text-[10px] text-slate-500 font-sans truncate pr-2">
+                                  Equiv Goboox: <strong className="text-slate-300 text-[10px] font-mono">{product.gobooxName}</strong>
                                 </span>
 
-                                <div className="flex gap-1.5">
+                                <div className="flex gap-1.5 shrink-0">
                                   <span className="text-[9px] bg-emerald-950/80 border border-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-mono">
-                                    Margem: {activeCalc.actualMarginPercent}%
+                                    {usePixSubsidy && <strong className="text-teal-400 mr-1 text-[8px] animate-pulse">⚡ PIX</strong>}Margem: {usePixSubsidy ? activeCalc.pixInvoiceMarginPercent : activeCalc.actualMarginPercent}%
                                   </span>
                                 </div>
                               </div>

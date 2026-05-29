@@ -8,7 +8,11 @@ export interface Product {
   salesVolume: number; // monthly units sold on Shopee
   imageUrl: string; // fallback icon/background gradient
   rating: number; // 0-5
-  shopeePrice: number; // standard end-user price on Shopee
+  shopeePrice: number; // standard end-user price on Shopee (computed as average)
+  shopeeMinPrice: number; // minimum price found on Shopee
+  shopeeMinSupplier: string; // supplier of minimum price
+  shopeeMaxPrice: number; // maximum price found on Shopee
+  shopeeMaxSupplier: string; // supplier of maximum price
   shopeeShippingCost: number; // estimated standard shipping cost paid by buyer (or free)
   hasFreeShippingBadge: boolean; // if the item had "Frete Grátis"
   gobooxName: string; // product name on Goboox
@@ -56,6 +60,13 @@ export interface CalculationDetails {
   estimatedProfit: number; // shopeePrice - totalCost
   actualMarginPercent: number; // (estimatedProfit / shopeePrice) * 100
   isProfitable: boolean;
+
+  // Pix Subsidy details
+  pixSubsidyRate: number; // e.g. 0.05 or 0.08
+  pixSubsidyAmount: number; // e.g. R$ 40
+  pixInvoiceValue: number; // e.g. R$ 460
+  pixCommissionAmount: number; // e.g. R$ 56
+  pixInvoiceMarginPercent: number; // e.g. 88%
 }
 
 export interface CalculationHistoryLog {
